@@ -618,104 +618,355 @@ Now, directly provide a super beginner-friendly Markdown output (DON'T need ```m
         del self.chapters_written_so_far
         print(f"Finished writing {len(exec_res_list)} chapters.")
 
+class TranslateTutorial(Node):
+    """
+    Node that translates a complete English tutorial to Castilian (Spanish).
+    Takes the English tutorial content and produces translated versions.
+    """
+    def prep(self, shared):
+        # Get all the necessary English content
+        project_name = shared["project_name"]
+        english_abstractions = shared["abstractions"]
+        english_relationships = shared["relationships"]
+        english_chapters = shared["chapters"]
+        
+        # Store original English content for later reference
+        shared["english_abstractions"] = english_abstractions.copy()
+        shared["english_relationships"] = english_relationships.copy()
+        shared["english_chapters"] = english_chapters.copy()
+        
+        # Return data needed for translation
+        return {
+            "project_name": project_name,
+            "abstractions": english_abstractions,
+            "relationships": english_relationships,
+            "chapters": english_chapters
+        }
+
+    def exec(self, prep_res):
+        project_name = prep_res["project_name"]
+        english_abstractions = prep_res["abstractions"]
+        english_relationships = prep_res["relationships"]
+        english_chapters = prep_res["chapters"]
+        
+        print(f"Translating tutorial content to Castilian (Spanish)...")
+        
+        # 1. Translate abstractions (names and descriptions)
+        spanish_abstractions = []
+        for i, abstraction in enumerate(english_abstractions):
+            print(f"  - Translating abstraction {i+1}/{len(english_abstractions)}: {abstraction['name']}...")
+            
+            translation_prompt = f"""
+Translate the following software concept name and description from English to Castilian Spanish (español castellano).
+Keep technical terms that should not be translated.
+
+Original name: {abstraction['name']}
+Original description: {abstraction['description']}
+
+Format your response as:
+Translated name: [Spanish translation of name]
+Translated description: [Spanish translation of description]
+"""
+            response = call_llm(translation_prompt)
+            
+            # Extract translated content
+            translated_name = ""
+            translated_desc = ""
+            
+            for line in response.split('\n'):
+                if line.startswith("Translated name:"):
+                    translated_name = line.replace("Translated name:", "").strip()
+                elif line.startswith("Translated description:"):
+                    translated_desc = line.replace("Translated description:", "").strip()
+            
+            # Validate translations
+            if not translated_name or not translated_desc:
+                raise ValueError(f"Failed to extract valid translation for abstraction {abstraction['name']}")
+                
+            # Create translated abstraction
+            spanish_abstractions.append({
+                "name": translated_name,
+                "description": translated_desc,
+                "files": abstraction["files"]  # Keep the same file references
+            })
+        
+        # 2. Translate relationships (summary and labels)
+        english_summary = english_relationships["summary"]
+        english_details = english_relationships["details"]
+        
+        # Translate summary
+        summary_prompt = f"""
+Translate the following project summary from English to Castilian Spanish (español castellano).
+Keep technical terms, code references, and markdown formatting intact.
+
+Original summary:
+{english_summary}
+
+Provide only the translated summary in Castilian Spanish:
+"""
+        spanish_summary = call_llm(summary_prompt)
+        
+        # Translate relationship labels
+        spanish_details = []
+        for rel in english_details:
+            from_idx = rel["from"]
+            to_idx = rel["to"]
+            english_label = rel["label"]
+            
+            label_prompt = f"""
+Translate the following relationship label from English to Castilian Spanish (español castellano).
+The label describes a relationship between software components.
+Keep technical terms intact.
+
+Original label: {english_label}
+
+Provide only the translated label in Castilian Spanish:
+"""
+            spanish_label = call_llm(label_prompt).strip()
+            
+            spanish_details.append({
+                "from": from_idx,
+                "to": to_idx,
+                "label": spanish_label
+            })
+        
+        spanish_relationships = {
+            "summary": spanish_summary,
+            "details": spanish_details
+        }
+        
+        # 3. Translate chapter content (most intensive part)
+        spanish_chapters = []
+        for i, chapter_content in enumerate(english_chapters):
+            print(f"  - Translating chapter {i+1}/{len(english_chapters)}...")
+            
+            # Get chapter title for context
+            chapter_title = ""
+            first_line = chapter_content.strip().split("\n")[0]
+            if first_line.startswith("# Chapter"):
+                chapter_title = first_line
+            
+            translation_prompt = f"""
+Translate the following Markdown tutorial chapter from English to Castilian Spanish (español castellano).
+This is a software tutorial chapter. Keep these guidelines in mind:
+
+1. Preserve all Markdown formatting, including headers, code blocks, links, emphasis, etc.
+2. DO NOT translate:
+   - Code inside ```code blocks```
+   - File names and paths
+   - Technical terms that should remain in English
+   - Variable names and function names in code references
+3. DO translate:
+   - Comments within code blocks (marked with # or // or /* */)
+   - All explanatory text
+   - Headings and titles
+   - Text in diagrams (within mermaid blocks)
+
+Chapter title: {chapter_title}
+
+Original chapter content to translate:
+{chapter_content}
+
+Provide only the completely translated chapter in Castilian Spanish:
+"""
+            spanish_chapter = call_llm(translation_prompt)
+            spanish_chapters.append(spanish_chapter)
+        
+        return {
+            "spanish_abstractions": spanish_abstractions,
+            "spanish_relationships": spanish_relationships,
+            "spanish_chapters": spanish_chapters
+        }
+
+    def post(self, shared, prep_res, exec_res):
+        # Store translated content in shared context
+        shared["spanish_abstractions"] = exec_res["spanish_abstractions"]
+        shared["spanish_relationships"] = exec_res["spanish_relationships"] 
+        shared["spanish_chapters"] = exec_res["spanish_chapters"]
+        # Keep original English content that was saved in prep step
+        print("Translation complete!")
+
 class CombineTutorial(Node):
     def prep(self, shared):
         project_name = shared["project_name"]
-        output_base_dir = shared.get("output_dir", "output") # Default output dir
-        output_path = os.path.join(output_base_dir, project_name)
+        output_base_dir = shared.get("output_dir", "output")  # Default output dir
         repo_url = shared.get("repo_url")  # Get the repository URL
-        # language = shared.get("language", "english") # No longer needed for fixed strings
+        
+        # Create output paths for both languages
+        english_output_path = os.path.join(output_base_dir, f"{project_name}_english")
+        spanish_output_path = os.path.join(output_base_dir, f"{project_name}_spanish")
+        
+        # Get both English and Spanish content
+        english_relationships = shared["english_relationships"]
+        english_abstractions = shared["english_abstractions"]
+        english_chapters = shared["english_chapters"]
+        english_chapter_order = shared["chapter_order"]  # Same order for both languages
+        
+        spanish_relationships = shared["spanish_relationships"]
+        spanish_abstractions = shared["spanish_abstractions"]
+        spanish_chapters = shared["spanish_chapters"]
+        
+        # Generate output for English version
+        english_output = self._prepare_language_output(
+            project_name=project_name,
+            output_path=english_output_path,
+            repo_url=repo_url,
+            relationships_data=english_relationships,
+            abstractions=english_abstractions,
+            chapter_order=english_chapter_order,
+            chapters_content=english_chapters,
+            language="English"
+        )
+        
+        # Generate output for Spanish version
+        spanish_output = self._prepare_language_output(
+            project_name=project_name,
+            output_path=spanish_output_path,
+            repo_url=repo_url,
+            relationships_data=spanish_relationships,
+            abstractions=spanish_abstractions,
+            chapter_order=english_chapter_order,  # Same order for both languages
+            chapters_content=spanish_chapters,
+            language="Castilian"
+        )
+        
+        # Create a language selector index file
+        selector_content = f"""# Tutorial: {project_name}
 
-        # Get potentially translated data
-        relationships_data = shared["relationships"] # {"summary": str, "details": [{"from": int, "to": int, "label": str}]} -> summary/label potentially translated
-        chapter_order = shared["chapter_order"] # indices
-        abstractions = shared["abstractions"]   # list of dicts -> name/description potentially translated
-        chapters_content = shared["chapters"]   # list of strings -> content potentially translated
+Choose your language / Elige tu idioma:
 
+- [English Version](./{os.path.basename(english_output_path)}/index.md)
+- [Versión en Español (Castellano)](./{os.path.basename(spanish_output_path)}/index.md)
+
+---
+
+Generated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)
+"""
+        
+        return {
+            "english_output": english_output,
+            "spanish_output": spanish_output,
+            "output_base_dir": output_base_dir,
+            "selector_content": selector_content
+        }
+    
+    def _prepare_language_output(self, project_name, output_path, repo_url, relationships_data, abstractions, chapter_order, chapters_content, language):
+        """Helper method to prepare output for a specific language"""
         # --- Generate Mermaid Diagram ---
         mermaid_lines = ["flowchart TD"]
-        # Add nodes for each abstraction using potentially translated names
+        # Add nodes for each abstraction
         for i, abstr in enumerate(abstractions):
             node_id = f"A{i}"
-            # Use potentially translated name, sanitize for Mermaid ID and label
             sanitized_name = abstr['name'].replace('"', '')
-            node_label = sanitized_name # Using sanitized name only
-            mermaid_lines.append(f'    {node_id}["{node_label}"]') # Node label uses potentially translated name
-        # Add edges for relationships using potentially translated labels
+            node_label = sanitized_name
+            mermaid_lines.append(f'    {node_id}["{node_label}"]')
+        # Add edges for relationships
         for rel in relationships_data['details']:
             from_node_id = f"A{rel['from']}"
             to_node_id = f"A{rel['to']}"
-            # Use potentially translated label, sanitize
-            edge_label = rel['label'].replace('"', '').replace('\n', ' ') # Basic sanitization
+            edge_label = rel['label'].replace('"', '').replace('\n', ' ')
             max_label_len = 30
             if len(edge_label) > max_label_len:
                 edge_label = edge_label[:max_label_len-3] + "..."
-            mermaid_lines.append(f'    {from_node_id} -- "{edge_label}" --> {to_node_id}') # Edge label uses potentially translated label
+            mermaid_lines.append(f'    {from_node_id} -- "{edge_label}" --> {to_node_id}')
 
         mermaid_diagram = "\n".join(mermaid_lines)
         # --- End Mermaid ---
 
         # --- Prepare index.md content ---
-        index_content = f"# Tutorial: {project_name}\n\n"
-        index_content += f"{relationships_data['summary']}\n\n" # Use the potentially translated summary directly
-        # Keep fixed strings in English
-        index_content += f"**Source Repository:** [{repo_url}]({repo_url})\n\n"
+        if language == "English":
+            index_content = f"# Tutorial: {project_name}\n\n"
+            source_repo_text = f"**Source Repository:** [{repo_url}]({repo_url})\n\n"
+            chapters_header = "## Chapters\n\n"
+            attribution = f"Generated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+        else:  # Spanish/Castilian
+            index_content = f"# Tutorial: {project_name}\n\n"
+            source_repo_text = f"**Repositorio Fuente:** [{repo_url}]({repo_url})\n\n"
+            chapters_header = "## Capítulos\n\n"
+            attribution = f"Generado por [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+        
+        index_content += f"{relationships_data['summary']}\n\n"
+        index_content += source_repo_text
 
-        # Add Mermaid diagram for relationships (diagram itself uses potentially translated names/labels)
+        # Add Mermaid diagram for relationships
         index_content += "```mermaid\n"
         index_content += mermaid_diagram + "\n"
         index_content += "```\n\n"
 
-        # Keep fixed strings in English
-        index_content += f"## Chapters\n\n"
+        index_content += chapters_header
 
         chapter_files = []
-        # Generate chapter links based on the determined order, using potentially translated names
+        # Generate chapter links based on the determined order
         for i, abstraction_index in enumerate(chapter_order):
             # Ensure index is valid and we have content for it
             if 0 <= abstraction_index < len(abstractions) and i < len(chapters_content):
-                abstraction_name = abstractions[abstraction_index]["name"] # Potentially translated name
-                # Sanitize potentially translated name for filename
+                abstraction_name = abstractions[abstraction_index]["name"]
                 safe_name = "".join(c if c.isalnum() else '_' for c in abstraction_name).lower()
                 filename = f"{i+1:02d}_{safe_name}.md"
-                index_content += f"{i+1}. [{abstraction_name}]({filename})\n" # Use potentially translated name in link text
+                index_content += f"{i+1}. [{abstraction_name}]({filename})\n"
 
-                # Add attribution to chapter content (using English fixed string)
-                chapter_content = chapters_content[i] # Potentially translated content
+                # Add attribution to chapter content
+                chapter_content = chapters_content[i]
                 if not chapter_content.endswith("\n\n"):
                     chapter_content += "\n\n"
-                # Keep fixed strings in English
-                chapter_content += f"---\n\nGenerated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+                chapter_content += f"---\n\n{attribution}"
 
                 # Store filename and corresponding content
                 chapter_files.append({"filename": filename, "content": chapter_content})
             else:
-                 print(f"Warning: Mismatch between chapter order, abstractions, or content at index {i} (abstraction index {abstraction_index}). Skipping file generation for this entry.")
+                print(f"Warning: Mismatch between chapter order, abstractions, or content at index {i} (abstraction index {abstraction_index}). Skipping file generation for this entry.")
 
-        # Add attribution to index content (using English fixed string)
-        index_content += f"\n\n---\n\nGenerated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+        # Add attribution to index content
+        index_content += f"\n\n---\n\n{attribution}"
 
         return {
             "output_path": output_path,
             "index_content": index_content,
-            "chapter_files": chapter_files # List of {"filename": str, "content": str}
+            "chapter_files": chapter_files
         }
 
     def exec(self, prep_res):
-        output_path = prep_res["output_path"]
-        index_content = prep_res["index_content"]
-        chapter_files = prep_res["chapter_files"]
-
-        print(f"Combining tutorial into directory: {output_path}")
-        # Rely on Node's built-in retry/fallback
-        os.makedirs(output_path, exist_ok=True)
-
+        output_base_dir = prep_res["output_base_dir"]
+        english_output = prep_res["english_output"]
+        spanish_output = prep_res["spanish_output"]
+        selector_content = prep_res["selector_content"]
+        
+        # Create output directories
+        os.makedirs(output_base_dir, exist_ok=True)
+        os.makedirs(english_output["output_path"], exist_ok=True)
+        os.makedirs(spanish_output["output_path"], exist_ok=True)
+        
+        # Create language selector index
+        selector_path = os.path.join(output_base_dir, "index.md")
+        with open(selector_path, "w", encoding="utf-8") as f:
+            f.write(selector_content)
+        print(f"Created language selector at: {selector_path}")
+        
+        # Write English version
+        self._write_language_output(english_output, "English")
+        
+        # Write Spanish version
+        self._write_language_output(spanish_output, "Spanish")
+        
+        return {
+            "root_dir": output_base_dir,
+            "english_dir": english_output["output_path"],
+            "spanish_dir": spanish_output["output_path"]
+        }
+    
+    def _write_language_output(self, language_output, language_name):
+        output_path = language_output["output_path"]
+        index_content = language_output["index_content"]
+        chapter_files = language_output["chapter_files"]
+        
+        print(f"Writing {language_name} tutorial to: {output_path}")
+        
         # Write index.md
         index_filepath = os.path.join(output_path, "index.md")
         with open(index_filepath, "w", encoding="utf-8") as f:
             f.write(index_content)
         print(f"  - Wrote {index_filepath}")
-
+        
         # Write chapter files
         for chapter_info in chapter_files:
             chapter_filepath = os.path.join(output_path, chapter_info["filename"])
@@ -723,9 +974,9 @@ class CombineTutorial(Node):
                 f.write(chapter_info["content"])
             print(f"  - Wrote {chapter_filepath}")
 
-        return output_path # Return the final path
-
-
     def post(self, shared, prep_res, exec_res):
-        shared["final_output_dir"] = exec_res # Store the output path
-        print(f"\nTutorial generation complete! Files are in: {exec_res}")
+        shared["final_output_dirs"] = exec_res  # Store all output paths
+        print(f"\nTutorial generation complete!")
+        print(f"Main index: {os.path.join(exec_res['root_dir'], 'index.md')}")
+        print(f"English version: {exec_res['english_dir']}")
+        print(f"Spanish version: {exec_res['spanish_dir']}")
